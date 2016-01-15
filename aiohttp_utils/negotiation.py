@@ -92,6 +92,8 @@ with a corresponding media type.
     the first specified renderer when the client passes an unsupported media type.
 
 """
+import mimetypes
+from aiohttp.web_exceptions import HTTPNotFound
 from collections import OrderedDict
 import asyncio
 import json as pyjson
@@ -170,13 +172,17 @@ DEFAULTS = {
         ('application/json', render_json),
     ]),
     'FORCE_NEGOTIATION': True,
+    'FORMAT_PARAMETER': None,
+    'GUESS_TYPE': lambda fmt: mimetypes.guess_type('_.' + fmt)[0],
 }
 
 
 def negotiation_middleware(
     renderers=DEFAULTS['RENDERERS'],
     negotiator=DEFAULTS['NEGOTIATOR'],
-    force_negotiation=DEFAULTS['FORCE_NEGOTIATION']
+    force_negotiation=DEFAULTS['FORCE_NEGOTIATION'],
+    format_parameter=DEFAULTS['FORMAT_PARAMETER'],
+    guess_type=DEFAULTS['GUESS_TYPE'],
 ):
     """Middleware which selects a renderer for a given request then renders
     a handler's data to a `aiohttp.web.Response`.
@@ -186,11 +192,17 @@ def negotiation_middleware(
 
         @asyncio.coroutine
         def middleware(request):
-            content_type, renderer = negotiator(
-                request,
-                renderers,
-                force_negotiation,
-            )
+            if format_parameter and format_parameter in request.match_info:
+                content_type = guess_type(request.match_info[format_parameter])
+                if content_type not in renderers:
+                    raise HTTPNotFound
+                renderer = renderers[content_type]
+            else:
+                content_type, renderer = negotiator(
+                    request,
+                    renderers,
+                    force_negotiation,
+                )
             request['selected_media_type'] = content_type
             response = yield from handler(request)
 
@@ -218,7 +230,9 @@ def negotiation_middleware(
 def setup(
     app: web.Application, *, negotiator: callable=DEFAULTS['NEGOTIATOR'],
     renderers: OrderedDict=DEFAULTS['RENDERERS'],
-    force_negotiation: bool=DEFAULTS['FORCE_NEGOTIATION']
+    force_negotiation: bool=DEFAULTS['FORCE_NEGOTIATION'],
+    format_parameter: str=DEFAULTS['FORMAT_PARAMETER'],
+    guess_type: callable=DEFAULTS['GUESS_TYPE']
 ):
     """Set up the negotiation middleware. Reads configuration from
     ``app['AIOHTTP_UTILS']``.
@@ -230,12 +244,19 @@ def setup(
     :param renderers: Mapping of mediatypes to callable renderers.
     :param force_negotiation: Whether to return a rennderer even if the
         client passes an unsupported media type).
+    :param format_parameter: A ``request.match_info`` key which will be checked for
+        a filetype extension to override content negotiation. Defaults to ``None``,
+        which disables this functionality.
+    :param guess_type: Function to convert a file extension to a media type. Defaults
+        to using the mimetypes module.
     """
     config = app.get(CONFIG_KEY, {})
     middleware = negotiation_middleware(
         renderers=config.get('RENDERERS', renderers),
         negotiator=config.get('NEGOTIATOR', negotiator),
-        force_negotiation=config.get('FORCE_NEGOTIATION', force_negotiation)
+        force_negotiation=config.get('FORCE_NEGOTIATION', force_negotiation),
+        format_parameter=config.get('FORMAT_PARAMETER', format_parameter),
+        guess_type=config.get('GUESS_TYPE', guess_type),
     )
     app.middlewares.append(middleware)
     return app
